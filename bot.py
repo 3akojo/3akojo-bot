@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import logging
+import asyncio
 from urllib.parse import quote
 
 from flask import Flask, request
@@ -12,10 +13,18 @@ from telegram.ext import (
     ContextTypes,
 )
 
+from google import genai
+
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+
+
+# =========================================================
+# ENVIRONMENT
+# =========================================================
 
 TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0") or 0)
@@ -26,14 +35,124 @@ DB_PATH = os.environ.get("DB_PATH", "a3kojo.db")
 CJ_AFFILIATE_URL = os.environ.get("CJ_AFFILIATE_URL", "").strip()
 GENIUS_WAVE_URL = os.environ.get("GENIUS_WAVE_URL", "").strip()
 
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+
+
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is missing")
+
 
 if not PUBLIC_URL:
     PUBLIC_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
 
+
+# =========================================================
+# GEMINI AI
+# =========================================================
+
+gemini_client = None
+
+if GEMINI_API_KEY:
+    try:
+        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        logging.info("Gemini AI client initialized.")
+    except Exception as e:
+        logging.error(f"Gemini initialization failed: {e}")
+        gemini_client = None
+else:
+    logging.warning("GEMINI_API_KEY is not configured.")
+
+
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+
+
+AI_SYSTEM_PROMPT = """
+You are the AI Business Agent for 3akojo.
+
+3akojo is a global Telegram affiliate marketing business.
+
+Your main mission is to help build and grow 3akojo through:
+- Affiliate marketing
+- CPA marketing
+- Organic traffic
+- Social media content
+- Telegram marketing
+- Offer analysis
+- Niche research
+- Content creation
+- Conversion optimization
+- Business strategy
+
+The starting budget is $0 unless the user says otherwise.
+
+Always focus on practical and actionable advice.
+
+Important rules:
+- Focus on global opportunities.
+- Never invent affiliate programs, commissions, prices,
+  approval status, requirements, or product features.
+- Clearly distinguish facts from assumptions.
+- If current information must be verified, say so.
+- Do not promise income.
+- Do not make misleading claims.
+- Do not recommend spam.
+- Prioritize organic traffic when the budget is $0.
+- Give clear next steps.
+- When discussing affiliate offers, mention that official
+  program details should be verified before promotion.
+- Answer in the same language as the user when possible.
+- If the user writes Arabic, answer in Arabic.
+- If the user writes English, answer in English.
+
+You are an assistant for business execution, not just general conversation.
+"""
+
+
+def ask_gemini_sync(user_task):
+    """
+    Sends the user's task to Gemini.
+    This function is synchronous and is executed in a background thread.
+    """
+
+    if not gemini_client:
+        raise RuntimeError("Gemini AI is not configured.")
+
+    prompt = f"""
+{AI_SYSTEM_PROMPT}
+
+USER TASK:
+{user_task}
+"""
+
+    response = gemini_client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+    )
+
+    return response.text
+
+
+async def ask_3akojo_ai(user_task):
+    """
+    Runs Gemini without blocking the Telegram event loop.
+    """
+
+    return await asyncio.to_thread(
+        ask_gemini_sync,
+        user_task
+    )
+
+
+# =========================================================
+# FLASK
+# =========================================================
+
 app = Flask(__name__)
 
+
+# =========================================================
+# DATABASE
+# =========================================================
 
 def db():
     con = sqlite3.connect(DB_PATH)
@@ -42,6 +161,7 @@ def db():
 
 
 def init_db():
+
     con = db()
     c = con.cursor()
 
@@ -101,8 +221,22 @@ def init_db():
 init_db()
 
 
+# =========================================================
+# MAIN MENU
+# =========================================================
+
 def main_menu_keyboard(bot_username=None, user_id=None):
+
     keyboard = []
+
+    # AI BUTTON
+    if GEMINI_API_KEY:
+        keyboard.append([
+            InlineKeyboardButton(
+                "🤖 3akojo AI",
+                callback_data="ai_agent"
+            )
+        ])
 
     if CJ_AFFILIATE_URL:
         keyboard.append([
@@ -122,20 +256,38 @@ def main_menu_keyboard(bot_username=None, user_id=None):
 
     keyboard.extend([
         [
-            InlineKeyboardButton("🛍️ المنتجات", callback_data="products"),
-            InlineKeyboardButton("👥 الإحالات", callback_data="ref"),
+            InlineKeyboardButton(
+                "🛍️ المنتجات",
+                callback_data="products"
+            ),
+            InlineKeyboardButton(
+                "👥 الإحالات",
+                callback_data="ref"
+            ),
         ],
         [
-            InlineKeyboardButton("💰 المحفظة", callback_data="wallet"),
-            InlineKeyboardButton("📢 الإعلانات", callback_data="ads"),
+            InlineKeyboardButton(
+                "💰 المحفظة",
+                callback_data="wallet"
+            ),
+            InlineKeyboardButton(
+                "📢 الإعلانات",
+                callback_data="ads"
+            ),
         ],
         [
-            InlineKeyboardButton("📦 طلباتي", callback_data="orders"),
+            InlineKeyboardButton(
+                "📦 طلباتي",
+                callback_data="orders"
+            ),
         ],
     ])
 
     if bot_username and user_id:
-        referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+
+        referral_link = (
+            f"https://t.me/{bot_username}?start=ref_{user_id}"
+        )
 
         share_text = (
             "🔥 اكتشف عروض ومنتجات عبر 3akojo\n"
@@ -159,17 +311,27 @@ def main_menu_keyboard(bot_username=None, user_id=None):
 
 
 def back_button():
-    return InlineKeyboardMarkup(
-        [[
+
+    return InlineKeyboardMarkup([
+        [
             InlineKeyboardButton(
                 "🏠 القائمة الرئيسية | Main Menu",
                 callback_data="menu"
             )
-        ]]
-    )
+        ]
+    ])
 
 
-async def show_main_menu(message_or_query, context, user_id):
+# =========================================================
+# MAIN MENU DISPLAY
+# =========================================================
+
+async def show_main_menu(
+    message_or_query,
+    context,
+    user_id
+):
+
     bot_info = await context.bot.get_me()
     username = bot_info.username
 
@@ -185,29 +347,51 @@ async def show_main_menu(message_or_query, context, user_id):
         "👥 Invite friends and share your referral link\n"
         "👥 ادعُ أصدقاءك وشارك رابط الإحالة\n\n"
 
+        "🤖 Ask 3akojo AI for affiliate business help\n"
+        "🤖 اسأل 3akojo AI عن التسويق بالعمولة\n\n"
+
         "👇 اختر من القائمة للبدء:"
     )
 
     if hasattr(message_or_query, "edit_message_text"):
+
         await message_or_query.edit_message_text(
             text,
-            reply_markup=main_menu_keyboard(username, user_id)
+            reply_markup=main_menu_keyboard(
+                username,
+                user_id
+            )
         )
+
     else:
+
         await message_or_query.reply_text(
             text,
-            reply_markup=main_menu_keyboard(username, user_id)
+            reply_markup=main_menu_keyboard(
+                username,
+                user_id
+            )
         )
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# START
+# =========================================================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     u = update.effective_user
 
     ref = None
 
     if context.args and context.args[0].startswith("ref_"):
+
         try:
             ref = int(context.args[0][4:])
+
         except ValueError:
             ref = None
 
@@ -219,9 +403,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ).fetchone()
 
     if not row:
+
         valid_ref = None
 
         if ref and ref != u.id:
+
             exists = con.execute(
                 "SELECT 1 FROM users WHERE id=?",
                 (ref,)
@@ -245,6 +431,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         if valid_ref:
+
             con.execute(
                 """
                 UPDATE users
@@ -257,6 +444,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         con.commit()
 
     else:
+
         con.execute(
             """
             UPDATE users
@@ -274,10 +462,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     con.close()
 
-    await show_main_menu(update.message, context, u.id)
+    await show_main_menu(
+        update.message,
+        context,
+        u.id
+    )
 
 
-async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# MENU
+# =========================================================
+
+async def menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     await show_main_menu(
         update.message,
         context,
@@ -285,16 +485,33 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# MY ID
+# =========================================================
+
+async def myid(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     await update.message.reply_text(
         f"🆔 Telegram ID:\n\n{update.effective_user.id}"
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# HELP
+# =========================================================
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     text = (
         "ℹ️ 3akojo Help | المساعدة\n\n"
 
+        "🤖 3akojo AI — مساعد ذكي للتسويق بالعمولة.\n"
         "🛍️ عروض CJ — تصفح العروض والمنتجات.\n"
         "🧠 Genius Wave — مشاهدة عرض Genius Wave.\n"
         "👥 الإحالات — احصل على رابط الإحالة الخاص بك.\n"
@@ -317,29 +534,177 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# AI COMMAND
+# =========================================================
+
+async def ai_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not gemini_client:
+
+        await update.message.reply_text(
+            "⚠️ 3akojo AI غير متصل حاليًا.\n\n"
+            "يرجى المحاولة لاحقًا."
+        )
+
+        return
+
+    user_task = update.message.text.partition(" ")[2].strip()
+
+    if not user_task:
+
+        await update.message.reply_text(
+            "🤖 3akojo AI\n\n"
+
+            "اكتب سؤالك بعد الأمر /ai\n\n"
+
+            "مثال:\n"
+            "/ai Give me 3 global affiliate niches "
+            "I can start with $0\n\n"
+
+            "مثال بالعربي:\n"
+            "/ai اديني 3 أفكار أفلييت أقدر أبدأ بها بدون رأس مال"
+        )
+
+        return
+
+    await update.message.reply_text(
+        "🤖 3akojo AI يعمل الآن...\n"
+        "⏳ لحظات..."
+    )
+
+    try:
+
+        result = await ask_3akojo_ai(
+            user_task
+        )
+
+        if not result:
+            result = "⚠️ لم يصل رد من Gemini."
+
+        # Telegram message limit protection
+        max_length = 4000
+
+        if len(result) <= max_length:
+
+            await update.message.reply_text(
+                "🤖 3akojo AI\n\n"
+                + result
+            )
+
+        else:
+
+            for i in range(
+                0,
+                len(result),
+                max_length
+            ):
+
+                await update.message.reply_text(
+                    result[i:i + max_length]
+                )
+
+    except Exception as e:
+
+        logging.error(
+            f"Gemini request failed: {e}"
+        )
+
+        await update.message.reply_text(
+            "⚠️ حدث خطأ أثناء الاتصال بـ Gemini.\n\n"
+            "حاول مرة أخرى بعد قليل."
+        )
+
+
+# =========================================================
+# BUTTONS
+# =========================================================
+
+async def buttons(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     q = update.callback_query
+
     await q.answer()
 
     uid = q.from_user.id
 
-    # =========================
-    # Main Menu
-    # =========================
+    # =====================================================
+    # MAIN MENU
+    # =====================================================
+
     if q.data == "menu":
-        await show_main_menu(q, context, uid)
+
+        await show_main_menu(
+            q,
+            context,
+            uid
+        )
+
         return
 
-    # =========================
-    # CJ Offers
-    # =========================
+    # =====================================================
+    # AI AGENT
+    # =====================================================
+
+    if q.data == "ai_agent":
+
+        if not gemini_client:
+
+            await q.edit_message_text(
+                "⚠️ 3akojo AI غير متصل حاليًا.",
+                reply_markup=back_button()
+            )
+
+            return
+
+        text = (
+            "🤖 3akojo AI\n\n"
+
+            "أنا مساعد 3akojo الذكي للتسويق بالعمولة.\n\n"
+
+            "أقدر أساعدك في:\n"
+            "🔎 تحليل عروض Affiliate و CPA\n"
+            "🎯 اختيار niches\n"
+            "📱 أفكار محتوى\n"
+            "🚀 Organic Traffic\n"
+            "📊 تحليل أفكار الأعمال\n"
+            "💰 استراتيجيات النمو\n\n"
+
+            "لاستخدامي، اكتب في Telegram:\n\n"
+
+            "/ai سؤالك هنا\n\n"
+
+            "مثال:\n"
+            "/ai Give me a zero-budget affiliate strategy "
+            "for 3akojo"
+        )
+
+        await q.edit_message_text(
+            text,
+            reply_markup=back_button()
+        )
+
+        return
+
+    # =====================================================
+    # CJ OFFERS
+    # =====================================================
+
     if q.data == "cj_offers":
 
         if not CJ_AFFILIATE_URL:
+
             await q.edit_message_text(
                 "⚠️ رابط CJ غير مضبوط حاليًا.",
                 reply_markup=back_button()
             )
+
             return
 
         con = db()
@@ -350,7 +715,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (user_id, source)
             VALUES (?, ?)
             """,
-            (uid, "cj_offers")
+            (
+                uid,
+                "cj_offers"
+            )
         )
 
         con.commit()
@@ -395,16 +763,19 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # =========================
-    # Genius Wave
-    # =========================
+    # =====================================================
+    # GENIUS WAVE
+    # =====================================================
+
     if q.data == "genius_wave":
 
         if not GENIUS_WAVE_URL:
+
             await q.edit_message_text(
                 "⚠️ رابط Genius Wave غير مضبوط حاليًا.",
                 reply_markup=back_button()
             )
+
             return
 
         con = db()
@@ -415,7 +786,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (user_id, source)
             VALUES (?, ?)
             """,
-            (uid, "genius_wave")
+            (
+                uid,
+                "genius_wave"
+            )
         )
 
         con.commit()
@@ -460,9 +834,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # =========================
-    # Products
-    # =========================
+    # =====================================================
+    # PRODUCTS
+    # =====================================================
+
     if q.data == "products":
 
         con = db()
@@ -479,16 +854,19 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         con.close()
 
         if not rows:
+
             await q.edit_message_text(
                 "🛍️ لا توجد منتجات مضافة حاليًا.\n\n"
                 "سنضيف المنتجات من لوحة الإدارة.",
                 reply_markup=back_button()
             )
+
             return
 
         text = "🛍️ المنتجات المتاحة:\n\n"
 
         for r in rows:
+
             text += (
                 f"#{r['id']} — {r['name']}\n"
                 f"💵 {r['price']:.2f}\n"
@@ -502,9 +880,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # =========================
-    # Referrals
-    # =========================
+    # =====================================================
+    # REFERRALS
+    # =====================================================
+
     if q.data == "ref":
 
         bot_info = await context.bot.get_me()
@@ -568,9 +947,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # =========================
-    # Wallet
-    # =========================
+    # =====================================================
+    # WALLET
+    # =====================================================
+
     if q.data == "wallet":
 
         con = db()
@@ -605,9 +985,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # =========================
-    # Ads
-    # =========================
+    # =====================================================
+    # ADS
+    # =====================================================
+
     if q.data == "ads":
 
         con = db()
@@ -625,10 +1006,12 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         con.close()
 
         if not rows:
+
             await q.edit_message_text(
                 "📢 لا توجد إعلانات حاليًا.",
                 reply_markup=back_button()
             )
+
             return
 
         text = "\n\n".join(
@@ -643,9 +1026,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # =========================
-    # Orders
-    # =========================
+    # =====================================================
+    # ORDERS
+    # =====================================================
+
     if q.data == "orders":
 
         con = db()
@@ -670,10 +1054,12 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         con.close()
 
         if not rows:
+
             await q.edit_message_text(
                 "📦 لا توجد طلبات حتى الآن.",
                 reply_markup=back_button()
             )
+
             return
 
         text = "\n".join(
@@ -689,14 +1075,26 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+# =========================================================
+# ADMIN
+# =========================================================
+
 def is_admin(user_id):
+
     return user_id == ADMIN_ID
 
 
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("غير مصرح.")
+
+        await update.message.reply_text(
+            "غير مصرح."
+        )
+
         return
 
     await update.message.reply_text(
@@ -712,7 +1110,14 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def addproduct(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# ADD PRODUCT
+# =========================================================
+
+async def addproduct(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not is_admin(update.effective_user.id):
         return
@@ -725,17 +1130,23 @@ async def addproduct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     if len(parts) != 3:
+
         await update.message.reply_text(
             "الصيغة:\n/addproduct الاسم|السعر|الوصف"
         )
+
         return
 
     try:
+
         price = float(parts[1])
+
     except ValueError:
+
         await update.message.reply_text(
             "السعر يجب أن يكون رقمًا."
         )
+
         return
 
     con = db()
@@ -761,7 +1172,14 @@ async def addproduct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def addad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# ADD AD
+# =========================================================
+
+async def addad(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not is_admin(update.effective_user.id):
         return
@@ -774,9 +1192,11 @@ async def addad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     if len(parts) != 2:
+
         await update.message.reply_text(
             "الصيغة:\n/addad العنوان|النص"
         )
+
         return
 
     con = db()
@@ -801,7 +1221,14 @@ async def addad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# CREDIT
+# =========================================================
+
+async def credit(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not is_admin(update.effective_user.id):
         return
@@ -814,18 +1241,24 @@ async def credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     if len(parts) != 2:
+
         await update.message.reply_text(
             "الصيغة:\n/credit user_id|amount"
         )
+
         return
 
     try:
+
         uid = int(parts[0])
         amount = float(parts[1])
+
     except ValueError:
+
         await update.message.reply_text(
             "بيانات غير صحيحة."
         )
+
         return
 
     con = db()
@@ -846,9 +1279,11 @@ async def credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     con.close()
 
     if result.rowcount == 0:
+
         await update.message.reply_text(
             "⚠️ المستخدم غير موجود."
         )
+
         return
 
     await update.message.reply_text(
@@ -856,7 +1291,14 @@ async def credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# STATS
+# =========================================================
+
+async def stats(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not is_admin(update.effective_user.id):
         return
@@ -926,7 +1368,14 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def clicks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# CLICKS
+# =========================================================
+
+async def clicks(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not is_admin(update.effective_user.id):
         return
@@ -988,7 +1437,14 @@ async def clicks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# ADMIN ORDERS
+# =========================================================
+
+async def admin_orders(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not is_admin(update.effective_user.id):
         return
@@ -1014,14 +1470,17 @@ async def admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     con.close()
 
     if not rows:
+
         await update.message.reply_text(
             "📦 لا توجد طلبات."
         )
+
         return
 
     text = "📦 آخر الطلبات:\n\n"
 
     for r in rows:
+
         text += (
             f"#{r['id']} | "
             f"User: {r['user_id']} | "
@@ -1032,7 +1491,14 @@ async def admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
-async def withdrawals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# WITHDRAWALS
+# =========================================================
+
+async def withdrawals(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not is_admin(update.effective_user.id):
         return
@@ -1048,10 +1514,19 @@ async def withdrawals(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# =========================================================
+# HEALTH
+# =========================================================
+
 @app.get("/")
 def health():
+
     return "3akojo bot is running", 200
 
+
+# =========================================================
+# TELEGRAM WEBHOOK
+# =========================================================
 
 @app.post("/telegram")
 def telegram_webhook():
@@ -1061,8 +1536,6 @@ def telegram_webhook():
         bot_app.bot
     )
 
-    import asyncio
-
     asyncio.run(
         bot_app.process_update(update)
     )
@@ -1070,7 +1543,12 @@ def telegram_webhook():
     return "ok", 200
 
 
+# =========================================================
+# TELEGRAM APPLICATION
+# =========================================================
+
 bot_app = Application.builder().token(TOKEN).build()
+
 
 bot_app.add_handler(
     CommandHandler("start", start)
@@ -1086,6 +1564,10 @@ bot_app.add_handler(
 
 bot_app.add_handler(
     CommandHandler("help", help_command)
+)
+
+bot_app.add_handler(
+    CommandHandler("ai", ai_command)
 )
 
 bot_app.add_handler(
@@ -1125,11 +1607,16 @@ bot_app.add_handler(
 )
 
 
+# =========================================================
+# SETUP
+# =========================================================
+
 async def setup():
 
     await bot_app.initialize()
 
     if PUBLIC_URL:
+
         await bot_app.bot.set_webhook(
             url=f"{PUBLIC_URL}/telegram"
         )
@@ -1137,9 +1624,11 @@ async def setup():
     await bot_app.start()
 
 
-if __name__ == "__main__":
+# =========================================================
+# RUN
+# =========================================================
 
-    import asyncio
+if __name__ == "__main__":
 
     asyncio.run(setup())
 
