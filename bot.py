@@ -5,7 +5,7 @@ import asyncio
 import threading
 from urllib.parse import quote
 
-from flask import Flask, request
+from flask import Flask, request, redirect
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -708,23 +708,6 @@ async def buttons(
 
             return
 
-        con = db()
-
-        con.execute(
-            """
-            INSERT INTO affiliate_clicks
-            (user_id, source)
-            VALUES (?, ?)
-            """,
-            (
-                uid,
-                "cj_offers"
-            )
-        )
-
-        con.commit()
-        con.close()
-
         text = (
             "🛍️ CJ Offers | عروض CJ\n\n"
 
@@ -746,7 +729,7 @@ async def buttons(
             [
                 InlineKeyboardButton(
                     "🔗 Open CJ Offers | فتح عروض CJ",
-                    url=CJ_AFFILIATE_URL
+                    url=f"{PUBLIC_URL}/go/cj" if PUBLIC_URL else CJ_AFFILIATE_URL
                 )
             ],
             [
@@ -779,23 +762,6 @@ async def buttons(
 
             return
 
-        con = db()
-
-        con.execute(
-            """
-            INSERT INTO affiliate_clicks
-            (user_id, source)
-            VALUES (?, ?)
-            """,
-            (
-                uid,
-                "genius_wave"
-            )
-        )
-
-        con.commit()
-        con.close()
-
         text = (
             "🧠 Genius Wave\n\n"
 
@@ -817,7 +783,7 @@ async def buttons(
             [
                 InlineKeyboardButton(
                     "🧠 Open Genius Wave | فتح العرض",
-                    url=GENIUS_WAVE_URL
+                    url=f"{PUBLIC_URL}/go/genius-wave" if PUBLIC_URL else GENIUS_WAVE_URL
                 )
             ],
             [
@@ -1523,6 +1489,36 @@ async def withdrawals(
 def health():
 
     return "3akojo bot is running", 200
+
+
+# Track the actual outbound click, not merely opening the offer screen.
+def record_affiliate_click(source):
+    con = db()
+    con.execute(
+        """
+        INSERT INTO affiliate_clicks (user_id, source)
+        VALUES (?, ?)
+        """,
+        (None, source),
+    )
+    con.commit()
+    con.close()
+
+
+@app.get("/go/cj")
+def go_cj():
+    if not CJ_AFFILIATE_URL.startswith(("https://", "http://")):
+        return "CJ affiliate URL is not configured", 503
+    record_affiliate_click("cj_offers")
+    return redirect(CJ_AFFILIATE_URL, code=302)
+
+
+@app.get("/go/genius-wave")
+def go_genius_wave():
+    if not GENIUS_WAVE_URL.startswith(("https://", "http://")):
+        return "Genius Wave URL is not configured", 503
+    record_affiliate_click("genius_wave")
+    return redirect(GENIUS_WAVE_URL, code=302)
 
 
 # =========================================================
