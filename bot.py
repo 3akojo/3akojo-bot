@@ -2,6 +2,7 @@ import os
 import sqlite3
 import logging
 import asyncio
+import threading
 from urllib.parse import quote
 
 from flask import Flask, request
@@ -1525,29 +1526,44 @@ def health():
 
 
 # =========================================================
-# TELEGRAM WEBHOOK
-# =========================================================
-
-@app.post("/telegram")
-def telegram_webhook():
-
-    update = Update.de_json(
-        request.get_json(force=True),
-        bot_app.bot
-    )
-
-    asyncio.run(
-        bot_app.process_update(update)
-    )
-
-    return "ok", 200
-
-
-# =========================================================
-# TELEGRAM APPLICATION
+# TELEGRAM APPLICATION + WEBHOOK
 # =========================================================
 
 bot_app = Application.builder().token(TOKEN).build()
+
+# Keep one persistent asyncio event loop for python-telegram-bot.
+# Flask request threads submit updates to this loop safely.
+bot_loop = asyncio.new_event_loop()
+bot_loop_ready = threading.Event()
+
+
+def run_bot_loop():
+    asyncio.set_event_loop(bot_loop)
+    bot_loop_ready.set()
+    bot_loop.run_forever()
+
+
+@app.post("/telegram")
+def telegram_webhook():
+    if not bot_loop.is_running():
+        return "Telegram application is not ready", 503
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return "Invalid Telegram update", 400
+
+    try:
+        update = Update.de_json(payload, bot_app.bot)
+        future = asyncio.run_coroutine_threadsafe(
+            bot_app.process_update(update),
+            bot_loop,
+        )
+        future.result(timeout=25)
+    except Exception:
+        logging.exception("Failed to process Telegram webhook update")
+        return "Update processing failed", 500
+
+    return "ok", 200
 
 
 bot_app.add_handler(
@@ -1629,10 +1645,32 @@ async def setup():
 # =========================================================
 
 if __name__ == "__main__":
-
-    asyncio.run(setup())
-
-    app.run(
-        host="0.0.0.0",
-        port=PORT
+    bot_thread = threading.Thread(
+        target=run_bot_loop,
+        name="telegram-asyncio-loop",
+        daemon=True,
     )
+    bot_thread.start()
+    bot_loop_ready.wait(timeout=10)
+
+    if not bot_loop.is_running():
+        raise RuntimeError("Telegram asyncio event loop failed to start")
+
+    try:
+        asyncio.run_coroutine_threadsafe(setup(), bot_loop).result(timeout=60)
+        logging.info("Telegram application started; webhook URL: %s", PUBLIC_URL)
+        app.run(
+            host="0.0.0.0",
+            port=PORT,
+            threaded=True,
+            use_reloader=False,
+        )
+    finally:
+        if bot_loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(bot_app.stop(), bot_loop).result(timeout=15)
+                asyncio.run_coroutine_threadsafe(bot_app.shutdown(), bot_loop).result(timeout=15)
+            except Exception:
+                logging.exception("Error while shutting down Telegram application")
+            bot_loop.call_soon_threadsafe(bot_loop.stop)
+        bot_thread.join(timeout=5)
