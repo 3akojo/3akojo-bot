@@ -709,27 +709,22 @@ async def buttons(
             return
 
         text = (
-            "🛍️ CJ Offers | عروض CJ\n\n"
-
-            "🔥 Discover products and available offers.\n"
-            "🔥 اكتشف المنتجات والعروض المتاحة.\n\n"
-
-            "👇 اضغط على الزر لفتح عروض CJ:\n\n"
-
-            "ℹ️ Affiliate Disclosure:\n"
-            "3akojo may earn a commission from eligible purchases "
-            "made through this affiliate link.\n\n"
-
-            "ℹ️ إفصاح:\n"
-            "قد يحصل 3akojo على عمولة عند إتمام عمليات شراء مؤهلة "
-            "عبر رابط الأفلييت."
+            "🛍️ CJdropshipping | فرص للتجارة الإلكترونية\\n\\n"
+            "ابدأ ببحث منتجات الاستخدام اليومي التي قد يحتاجها العملاء باستمرار، مثل "
+            "مستلزمات المنزل، إكسسوارات الحيوانات الأليفة، وأدوات تنظيم المنزل.\\n"
+            "هذه أفكار للبحث وليست تأكيدًا لتوفر منتج أو مبيعاته. افحص السعر، الشحن، "
+            "التقييمات، والمخزون قبل اختياره.\\n\\n"
+            "مهم: رابط الشراكة الحالي يروّج لمنصة CJdropshipping لأصحاب المتاجر والدروبشيبنغ؛ "
+            "ليس رابط عمولة مؤكدًا لكل منتج استهلاكي. تذكر شروط CJ أن العمولة المنشورة "
+            "تُحسب على نشاط العملاء المُحالين المؤهلين.\\n\\n"
+            "قد يحصل 3akojo على عمولة من الإحالات المؤهلة."
         )
 
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    "🔗 Open CJ Offers | فتح عروض CJ",
-                    url=f"{PUBLIC_URL}/go/cj" if PUBLIC_URL else CJ_AFFILIATE_URL
+                    "🔗 فتح عروض CJ",
+                    url=f"{PUBLIC_URL}/go/cj?uid={uid}" if PUBLIC_URL else CJ_AFFILIATE_URL
                 )
             ],
             [
