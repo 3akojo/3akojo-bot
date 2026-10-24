@@ -709,14 +709,14 @@ async def buttons(
             return
 
         text = (
-            "🛍️ CJdropshipping | فرص للتجارة الإلكترونية\\n\\n"
+            "🛍️ CJdropshipping | فرص للتجارة الإلكترونية\n\n"
             "ابدأ ببحث منتجات الاستخدام اليومي التي قد يحتاجها العملاء باستمرار، مثل "
-            "مستلزمات المنزل، إكسسوارات الحيوانات الأليفة، وأدوات تنظيم المنزل.\\n"
+            "مستلزمات المنزل، إكسسوارات الحيوانات الأليفة، وأدوات تنظيم المنزل.\n"
             "هذه أفكار للبحث وليست تأكيدًا لتوفر منتج أو مبيعاته. افحص السعر، الشحن، "
-            "التقييمات، والمخزون قبل اختياره.\\n\\n"
+            "التقييمات، والمخزون قبل اختياره.\n\n"
             "مهم: رابط الشراكة الحالي يروّج لمنصة CJdropshipping لأصحاب المتاجر والدروبشيبنغ؛ "
             "ليس رابط عمولة مؤكدًا لكل منتج استهلاكي. تذكر شروط CJ أن العمولة المنشورة "
-            "تُحسب على نشاط العملاء المُحالين المؤهلين.\\n\\n"
+            "تُحسب على نشاط العملاء المُحالين المؤهلين.\n\n"
             "قد يحصل 3akojo على عمولة من الإحالات المؤهلة."
         )
 
@@ -778,7 +778,7 @@ async def buttons(
             [
                 InlineKeyboardButton(
                     "🧠 Open Genius Wave | فتح العرض",
-                    url=f"{PUBLIC_URL}/go/genius-wave" if PUBLIC_URL else GENIUS_WAVE_URL
+                    url=f"{PUBLIC_URL}/go/genius-wave?uid={uid}" if PUBLIC_URL else GENIUS_WAVE_URL
                 )
             ],
             [
@@ -1487,14 +1487,14 @@ def health():
 
 
 # Track the actual outbound click, not merely opening the offer screen.
-def record_affiliate_click(source):
+def record_affiliate_click(source, user_id=None):
     con = db()
     con.execute(
         """
         INSERT INTO affiliate_clicks (user_id, source)
         VALUES (?, ?)
         """,
-        (None, source),
+        (user_id, source),
     )
     con.commit()
     con.close()
@@ -1504,7 +1504,9 @@ def record_affiliate_click(source):
 def go_cj():
     if not CJ_AFFILIATE_URL.startswith(("https://", "http://")):
         return "CJ affiliate URL is not configured", 503
-    record_affiliate_click("cj_offers")
+    raw_uid = request.args.get("uid", "")
+    user_id = int(raw_uid) if raw_uid.isdigit() else None
+    record_affiliate_click("cj_offers", user_id)
     return redirect(CJ_AFFILIATE_URL, code=302)
 
 
@@ -1512,7 +1514,9 @@ def go_cj():
 def go_genius_wave():
     if not GENIUS_WAVE_URL.startswith(("https://", "http://")):
         return "Genius Wave URL is not configured", 503
-    record_affiliate_click("genius_wave")
+    raw_uid = request.args.get("uid", "")
+    user_id = int(raw_uid) if raw_uid.isdigit() else None
+    record_affiliate_click("genius_wave", user_id)
     return redirect(GENIUS_WAVE_URL, code=302)
 
 
